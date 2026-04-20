@@ -193,9 +193,27 @@ int head_update(const ObjectID *new_commit) {
 //   - head_update       : moves the branch pointer to your new commit
 //
 // Returns 0 on success, -1 on error.
-int commit_create(const char *message, ObjectID *commit_id_out) {
     // TODO: Implement commit creation
     // (See Lab Appendix for logical steps)
-    (void)message; (void)commit_id_out;
-    return -1;
+int commit_create(const char *message, ObjectID *id_out) {
+    Index index;
+    if (index_load(&index) != 0) return -1;
+
+    ObjectID tree_id;
+    if (tree_from_index(&tree_id) != 0) return -1;
+
+    char tree_hex[HASH_HEX_SIZE + 1];
+    hash_to_hex(&tree_id, tree_hex);
+
+    char *author = getenv("PES_AUTHOR");
+    if (!author) author = "PES User <pes@localhost>";
+
+    char buffer[1024];
+    int len = snprintf(buffer, sizeof(buffer),
+        "tree %s\n"
+        "author %s\n"
+        "message %s\n",
+        tree_hex, author, message);
+
+    return object_write(OBJ_COMMIT, buffer, len, id_out);
 }
