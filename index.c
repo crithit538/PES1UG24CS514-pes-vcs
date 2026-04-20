@@ -15,7 +15,9 @@
 // PROVIDED functions: index_find, index_remove, index_status
 // TODO functions:     index_load, index_save, index_add
 
+
 #include "index.h"
+#include "pes.h" 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +36,6 @@ IndexEntry* index_find(Index *index, const char *path) {
     }
     return NULL;
 }
-
 // Remove a file from the index.
 // Returns 0 on success, -1 if path not in index.
 int index_remove(Index *index, const char *path) {
@@ -48,10 +49,10 @@ int index_remove(Index *index, const char *path) {
             return index_save(index);
         }
     }
+
     fprintf(stderr, "error: '%s' is not in the index\n", path);
     return -1;
 }
-
 // Print the status of the working directory.
 //
 // Identifies files that are staged, unstaged (modified/deleted in working dir),
@@ -134,11 +135,37 @@ int index_status(const Index *index) {
 //   - hex_to_hash                      : converting the parsed string to ObjectID
 //
 // Returns 0 on success, -1 on error.
-int index_load(Index *index) {
     // TODO: Implement index loading
     // (See Lab Appendix for logical steps)
-    (void)index;
-    return -1;
+int index_load(Index *index) {
+    index->count = 0;
+
+    FILE *fp = fopen(".pes/index", "r");
+    if (!fp) {
+        // file doesn't exist → empty index (NOT error)
+        return 0;
+    }
+
+    char mode_str[16], hash_hex[65], path[256];
+    unsigned long mtime;
+    size_t size;
+
+    while (fscanf(fp, "%s %s %lu %zu %s",
+                  mode_str, hash_hex, &mtime, &size, path) == 5) {
+
+        if (index->count >= MAX_INDEX_ENTRIES) break;
+
+        IndexEntry *e = &index->entries[index->count++];
+
+        e->mode = strtol(mode_str, NULL, 8);
+        hex_to_hash(hash_hex, &e->hash);
+        e->mtime_sec = mtime;
+        e->size = size;
+        strcpy(e->path, path);
+    }
+
+    fclose(fp);
+    return 0;
 }
 
 // Save the index to .pes/index atomically.
@@ -151,13 +178,34 @@ int index_load(Index *index) {
 //   - rename                           : atomically moving the temp file over the old index
 //
 // Returns 0 on success, -1 on error.
-int index_save(const Index *index) {
     // TODO: Implement atomic index saving
     // (See Lab Appendix for logical steps)
-    (void)index;
-    return -1;
-}
+int index_save(const Index *index) {
+    FILE *fp = fopen(".pes/index.tmp", "w");
+    if (!fp) return -1;
 
+    // Write entries
+    for (int i = 0; i < index->count; i++) {
+        char hex[HASH_HEX_SIZE + 1];
+        hash_to_hex(&index->entries[i].hash, hex);
+
+                fprintf(fp, "%o %s %lu %u %s\n",
+                index->entries[i].mode,
+                hex,
+                index->entries[i].mtime_sec,
+                index->entries[i].size,
+                index->entries[i].path);
+    }
+
+    fflush(fp);
+    fsync(fileno(fp));
+    fclose(fp);
+
+    // Atomic rename
+    rename(".pes/index.tmp", ".pes/index");
+
+    return 0;
+}
 // Stage a file for the next commit.
 //
 // HINTS - Useful functions and syscalls:
@@ -167,9 +215,57 @@ int index_save(const Index *index) {
 //   - index_find                       : checking if the file is already staged
 //
 // Returns 0 on success, -1 on error.
-int index_add(Index *index, const char *path) {
     // TODO: Implement file staging
     // (See Lab Appendix for logical steps)
-    (void)index; (void)path;
-    return -1;
+int index_add(Index *index, const char *path) {
+    // 1. Read file
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        perror("fopen");
+        return -1;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    rewind(fp);
+
+    void *buffer = malloc(size);
+    if (!buffer) {
+        fclose(fp);
+        return -1;
+    }
+
+    fread(buffer, 1, size, fp);
+    fclose(fp);
+
+    // 2. Write as blob
+    ObjectID hash;
+    if (object_write(OBJ_BLOB, buffer, size, &hash) != 0) {
+        free(buffer);
+        return -1;
+    }
+
+    free(buffer);
+
+    // 3. Get file metadata
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+
+    // 4. Check if already exists
+    IndexEntry *e = index_find(index, path);
+
+    if (!e) {
+        if (index->count >= MAX_INDEX_ENTRIES) return -1;
+        e = &index->entries[index->count++];
+    }
+
+    // 5. Fill entry
+    e->mode = st.st_mode;
+    e->hash = hash;
+    e->mtime_sec = st.st_mtime;
+    e->size = st.st_size;
+    strcpy(e->path, path);
+
+    // 6. Save index
+    return index_save(index);
 }
